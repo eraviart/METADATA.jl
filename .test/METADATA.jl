@@ -1,6 +1,12 @@
 const url_reg = r"^(([^:/?#]+):)?(//([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?"
 const gh_path_reg_git=r"^/(.*)?/(.*)?.git$"
 
+#We don't have a mechanism for installing packages required for testing
+#purposes only when the repo being tested is METADATA
+Pkg.installed("Requests")==nothing && Pkg.add("Requests")
+
+using Requests
+
 for (pkg, versions) in Pkg.Read.available()
     url = (Pkg.Read.url(pkg))
     @assert length(versions) > 0 "Package $pkg has no tagged versions."
@@ -52,11 +58,39 @@ for (pkg, versions) in Pkg.Read.available()
         endswith(repo, ".jl") || warn("Repository name $repo does not end in .jl")
         #@assert !endswith(pkg, ".jl") "Package name $pkg should not end in .jl"
         #@assert endswith(repo, ".jl") "Repository name $repo does not end in .jl"
-        
+
         sha1_file = "METADATA/$pkg/versions/$(maxv)/sha1"
-        @assert isfile(sha1_file) "File not found: $sha1_file" 
-        
+        @assert isfile(sha1_file) "File not found: $sha1_file"
+
+        #Check that requires and REQUIRE are consistent in the most recent tagged
+        #version
+        maxverreqs = versions[maxv].requires
+        sha1 = versions[maxv].sha1
+        pathwogit = path[1:end-4]
+        require_url = "https://raw.githubusercontent.com$pathwogit/$sha1/REQUIRE"
+        packet = get(require_url)
+        @assert packet.finished "HTTP request from $require_url did not complete"
+        data = if packet.status == 200
+                packet.data
+            elseif packet.status == 404
+                warn("404 Not found: $require_url")
+                ""
+            end
+        currentreqs = Pkg.Reqs.parse(IOBuffer(data))
+        #Check explicitly for Julia version tags
+        "julia" in keys(currentreqs) || warn("No Julia version tagged in $pkg REQUIRE")
+        "julia" in keys(maxverreqs)  || warn("No Julia version tagged in $pkg $maxv requires")
+        if maxverreqs != currentreqs
+            println("-"^78)
+            warn("Inconsistent requirements for $pkg v$maxv:\n")
+            println("$pkg $sha1 REQUIRE:\n")
+            display(currentreqs)
+            println("\n\n\n$pkg $maxv requires:\n")
+            display(maxverreqs)
+            println("\n", "-"^78)
+        end
     end
+
 end
 
 Pkg.Entry.check_metadata()
